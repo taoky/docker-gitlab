@@ -1,0 +1,57 @@
+name: Build and publish to GHCR
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: publish-ghcr
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Image metadata
+        id: image
+        run: |
+          version=$(cat VERSION)
+          image="ghcr.io/${GITHUB_REPOSITORY,,}:$version"
+          echo "tag=$image" >> "$GITHUB_OUTPUT"
+          echo "IMAGE=$image" >> "$GITHUB_ENV"
+      - name: Build
+        run: |
+          docker build --platform linux/amd64 \
+            --build-arg BUILD_DATE="$(date --utc +%FT%TZ)" \
+            --build-arg VCS_REF="$GITHUB_SHA" \
+            --label org.opencontainers.image.source="https://github.com/$GITHUB_REPOSITORY" \
+            --label org.opencontainers.image.revision="$GITHUB_SHA" \
+            --label org.opencontainers.image.version="$(cat VERSION)" \
+            --tag "$IMAGE" .
+      - name: Check version and boot
+        run: |
+          test "$(docker run --rm --entrypoint cat "$IMAGE" VERSION)" = "$(cat VERSION)"
+          sed -i "s|image: sameersbn/gitlab:.*|image: $IMAGE|" docker-compose.yml
+          docker compose up -d
+          timeout 900 bash -c 'until curl --fail --silent http://localhost:10080/explore > /dev/null; do sleep 10; done'
+      - name: Container logs
+        if: always()
+        run: docker compose logs --no-color --tail 200
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish and verify
+        run: |
+          docker push "$IMAGE"
+          docker buildx imagetools inspect "$IMAGE" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Clean up
+        if: always()
+        run: docker compose down --volumes
