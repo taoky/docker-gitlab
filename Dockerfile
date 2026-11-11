@@ -1,4 +1,4 @@
-FROM ubuntu:noble-20260917
+FROM ustclug/ubuntu:noble
 
 ARG VERSION=19.5.4
 
